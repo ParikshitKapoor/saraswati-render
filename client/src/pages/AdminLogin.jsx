@@ -24,13 +24,12 @@ export default function AdminLogin() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Forgot password state machine: 'REQUEST_OTP' -> 'VERIFY_OTP' -> 'SET_PASSWORD' -> 'SUCCESS'
+  // 2-Step Password Setup / Recovery Flow: 'REQUEST_OTP' (Step 1) -> 'RESET_PASSWORD' (Step 2) -> 'SUCCESS'
   const [forgotStep, setForgotStep] = useState('REQUEST_OTP');
+  const [phoneNumber, setPhoneNumber] = useState('+91 9811798761');
   const [maskedPhone, setMaskedPhone] = useState('+91 98117 •••61');
   const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
-  const [devOtpHint, setDevOtpHint] = useState('');
   const [countdown, setCountdown] = useState(0);
-  const [resetToken, setResetToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNewPw, setShowNewPw] = useState(false);
@@ -39,10 +38,13 @@ export default function AdminLogin() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  // Load auth info on mount
+  // Load registered admin phone info on mount
   useEffect(() => {
     api.get('/auth/info')
       .then(res => {
+        if (res.data?.phone) {
+          setPhoneNumber(res.data.phone);
+        }
         if (res.data?.maskedPhone) {
           setMaskedPhone(res.data.maskedPhone);
         }
@@ -50,7 +52,7 @@ export default function AdminLogin() {
       .catch(() => {});
   }, []);
 
-  // Resend countdown timer
+  // 60-second resend countdown timer
   useEffect(() => {
     if (countdown > 0) {
       const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
@@ -68,26 +70,47 @@ export default function AdminLogin() {
       toast.success('Welcome back, Admin!');
       navigate('/admin');
     } catch (err) {
+      if (err.response?.data?.needsSetup) {
+        toast.error(err.response.data.message, { duration: 6000 });
+        setMode('forgot');
+        setForgotStep('REQUEST_OTP');
+        return;
+      }
       toast.error(err.response?.data?.message || 'Invalid credentials');
     } finally {
       setLoading(false);
     }
   };
 
-  // Step 1: Request OTP for registered hardcoded phone number
-  const handleRequestOtp = async () => {
+  // STEP 1: Request OTP (POST /api/auth/request-otp)
+  const handleRequestOtp = async (e) => {
+    if (e?.preventDefault) e.preventDefault();
+    if (!phoneNumber.trim()) {
+      toast.error('Please enter a registered phone number');
+      return;
+    }
+
     setLoading(true);
     try {
-      const { data } = await api.post('/auth/forgot-password', { username: 'admin' });
+      const { data } = await api.post('/auth/request-otp', {
+        phone_number: phoneNumber.trim(),
+      });
+
       if (data.maskedPhone) setMaskedPhone(data.maskedPhone);
-      if (data.devOtp) setDevOtpHint(data.devOtp);
-      toast.success(data.message || 'OTP dispatched to registered admin mobile!');
-      setForgotStep('VERIFY_OTP');
+
+      toast.success(data.message || 'OTP dispatched to registered mobile!');
+      setForgotStep('RESET_PASSWORD');
       setCountdown(60);
       // Focus first OTP field
       setTimeout(() => otpInputsRef.current[0]?.focus(), 150);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to dispatch OTP. Please try again.');
+      const status = err.response?.status;
+      const msg = err.response?.data?.message;
+      if (status === 429) {
+        toast.error(msg || 'Please wait before requesting another OTP');
+      } else {
+        toast.error(msg || 'Failed to dispatch OTP. Please verify phone number and gateway.');
+      }
     } finally {
       setLoading(false);
     }
@@ -127,33 +150,20 @@ export default function AdminLogin() {
 
   const fullOtp = otpDigits.join('');
 
-  // Step 2: Verify OTP
-  const handleVerifyOtp = async e => {
-    e?.preventDefault();
-    if (fullOtp.length !== 6) {
-      toast.error('Please enter all 6 digits of the OTP');
-      return;
-    }
-    setLoading(true);
-    try {
-      const { data } = await api.post('/auth/verify-otp', { otp: fullOtp });
-      setResetToken(data.resetToken);
-      toast.success('OTP verified successfully!');
-      setForgotStep('SET_PASSWORD');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Invalid or expired OTP');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Step 3: Set New Password
+  // STEP 2: Set / Reset Password (POST /api/auth/reset-password)
   const handleResetPassword = async e => {
     e.preventDefault();
+
+    if (fullOtp.length !== 6) {
+      toast.error('Please enter all 6 digits of the OTP code');
+      return;
+    }
+
     if (newPassword.length < 6) {
       toast.error('Password must be at least 6 characters');
       return;
     }
+
     if (newPassword !== confirmPassword) {
       toast.error('Passwords do not match');
       return;
@@ -162,16 +172,18 @@ export default function AdminLogin() {
     setLoading(true);
     try {
       const { data } = await api.post('/auth/reset-password', {
-        resetToken,
+        phone_number: phoneNumber.trim(),
         otp: fullOtp,
-        newPassword,
+        new_password: newPassword,
       });
-      toast.success(data.message || 'Password reset successfully!');
+
+      toast.success(data.message || 'Password saved successfully!');
       setForgotStep('SUCCESS');
       // Pre-fill login password with the newly set password
       setLoginForm(prev => ({ ...prev, password: newPassword }));
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to reset password');
+      const msg = err.response?.data?.message || 'Failed to save password';
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -217,12 +229,12 @@ export default function AdminLogin() {
             className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-2"
             style={{ fontFamily: 'Space Grotesk, Outfit, sans-serif' }}
           >
-            {mode === 'login' ? 'Admin Gateway' : 'Security Recovery'}
+            {mode === 'login' ? 'Admin Gateway' : 'Security Setup & Recovery'}
           </h1>
           <p className="text-[#94A3B8] text-sm">
             {mode === 'login'
               ? 'Authorized Superbike Administration & Telemetry'
-              : 'One-Time Password (OTP) verification protocol'}
+              : 'Traccar SMS OTP verification protocol'}
           </p>
         </div>
 
@@ -259,7 +271,7 @@ export default function AdminLogin() {
                   : 'text-[#94A3B8] hover:text-white'
               }`}
             >
-              Reset Password
+              Set / Reset Password
             </button>
           </div>
 
@@ -340,18 +352,22 @@ export default function AdminLogin() {
                   )}
                 </button>
 
-                {/* Default Credentials Notice */}
+                {/* First-time Setup Link */}
                 <div className="pt-2 text-center">
-                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#090A0F] border border-white/5 text-[11px] font-mono text-[#94A3B8]">
-                    <span>Default:</span>
-                    <span className="text-white font-bold">admin</span>
-                    <span>/</span>
-                    <span className="text-[#F97316] font-bold">admin@123$</span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setForgotStep('REQUEST_OTP');
+                    }}
+                    className="text-xs text-[#94A3B8] hover:text-[#F97316] transition-colors inline-flex items-center gap-1 font-mono"
+                  >
+                    First time logging in? <span className="underline text-[#F97316]">Set password via OTP</span>
+                  </button>
                 </div>
               </motion.form>
             ) : (
-              /* ── FORGOT PASSWORD / OTP RECOVERY ── */
+              /* ── 2-STEP PASSWORD SETUP & RECOVERY FLOW ── */
               <motion.div
                 key="forgot-password-flow"
                 initial={{ opacity: 0, x: 12 }}
@@ -359,36 +375,37 @@ export default function AdminLogin() {
                 exit={{ opacity: 0, x: -12 }}
                 className="space-y-5"
               >
-                {/* STEP 1: REQUEST OTP */}
+                {/* STEP 1: VERIFIED OWNER MOBILE + SEND OTP BUTTON */}
                 {forgotStep === 'REQUEST_OTP' && (
-                  <div className="space-y-5 text-center">
-                    <div className="w-14 h-14 rounded-2xl bg-[#F97316]/10 border border-[#F97316]/30 flex items-center justify-center mx-auto text-[#F97316]">
-                      <Smartphone size={26} />
-                    </div>
+                  <div className="space-y-5">
+                    <div className="text-center">
+                      <div className="w-14 h-14 rounded-2xl bg-[#F97316]/10 border border-[#F97316]/30 flex items-center justify-center mx-auto text-[#F97316] mb-3">
+                        <Smartphone size={26} />
+                      </div>
 
-                    <div>
                       <h3
                         className="text-lg font-bold text-white mb-1"
                         style={{ fontFamily: 'Space Grotesk, sans-serif' }}
                       >
-                        Reset via Authorized Phone
+                        Set / Reset via Owner OTP
                       </h3>
                       <p className="text-xs text-[#94A3B8] leading-relaxed">
-                        A single-use 6-digit OTP will be dispatched to the verified admin number registered on file.
+                        A single-use 6-digit OTP will be dispatched via Traccar Gateway to the showroom owner's registered mobile number.
                       </p>
                     </div>
 
-                    <div className="bg-[#181B26] border border-white/10 rounded-xl p-3.5 flex items-center justify-between text-left">
+                    {/* Locked Display Card for Registered Owner Phone */}
+                    <div className="bg-[#181B26] border border-white/10 rounded-xl p-4 flex items-center justify-between text-left">
                       <div>
                         <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-                          Verified Destination Number
+                          Registered Owner Mobile
                         </div>
-                        <div className="text-sm font-mono font-bold text-white tracking-wider">
-                          {maskedPhone}
+                        <div className="text-base font-mono font-bold text-white tracking-wider mt-0.5">
+                          {maskedPhone || '+91 98117 •••61'}
                         </div>
                       </div>
-                      <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                        <ShieldCheck size={12} /> Hardcoded
+                      <span className="inline-flex items-center gap-1 text-[11px] font-mono px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+                        <ShieldCheck size={13} /> Verified
                       </span>
                     </div>
 
@@ -403,24 +420,26 @@ export default function AdminLogin() {
                       ) : (
                         <>
                           <KeyRound size={16} />
-                          Dispatch 6-Digit OTP
+                          Send Verification OTP
                         </>
                       )}
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setMode('login')}
-                      className="inline-flex items-center gap-1.5 text-xs text-[#94A3B8] hover:text-white transition-colors"
-                    >
-                      <ArrowLeft size={14} /> Back to Sign In
-                    </button>
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => setMode('login')}
+                        className="inline-flex items-center gap-1.5 text-xs text-[#94A3B8] hover:text-white transition-colors"
+                      >
+                        <ArrowLeft size={14} /> Back to Sign In
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* STEP 2: VERIFY OTP DIGITS */}
-                {forgotStep === 'VERIFY_OTP' && (
-                  <form onSubmit={handleVerifyOtp} className="space-y-5">
+                {/* STEP 2: 6-DIGIT OTP + NEW PASSWORD + SAVE BUTTON */}
+                {forgotStep === 'RESET_PASSWORD' && (
+                  <form onSubmit={handleResetPassword} className="space-y-4">
                     <div className="text-center">
                       <div className="w-12 h-12 rounded-xl bg-[#38BDF8]/10 border border-[#38BDF8]/30 flex items-center justify-center mx-auto text-[#38BDF8] mb-2">
                         <KeyRound size={22} />
@@ -429,50 +448,37 @@ export default function AdminLogin() {
                         className="text-base font-bold text-white"
                         style={{ fontFamily: 'Space Grotesk, sans-serif' }}
                       >
-                        Enter 6-Digit Verification Code
+                        Enter OTP & Choose Password
                       </h3>
-                      <p className="text-xs text-[#94A3B8] mt-0.5">
-                        Sent to <span className="font-mono text-white">{maskedPhone}</span>
-                      </p>
+                      <div className="flex items-center justify-center gap-2 text-xs text-[#94A3B8] mt-0.5">
+                        <span>Code dispatched to <strong className="text-white font-mono">{maskedPhone}</strong></span>
+                      </div>
                     </div>
 
                     {/* Segmented OTP 6-Box Input */}
-                    <div className="flex items-center justify-center gap-2" onPaste={handleOtpPaste}>
-                      {otpDigits.map((digit, idx) => (
-                        <input
-                          key={idx}
-                          ref={el => (otpInputsRef.current[idx] = el)}
-                          type="text"
-                          inputMode="numeric"
-                          maxLength={1}
-                          value={digit}
-                          onChange={e => handleOtpChange(idx, e.target.value)}
-                          onKeyDown={e => handleOtpKeyDown(idx, e)}
-                          className="w-11 h-13 text-center text-xl font-mono font-bold bg-[#181B26] border border-white/15 focus:border-[#F97316] focus:ring-1 focus:ring-[#F97316] text-white rounded-xl outline-none transition-all shadow-inner"
-                        />
-                      ))}
+                    <div>
+                      <label className="text-[11px] font-mono uppercase tracking-wider text-[#94A3B8] mb-1.5 block text-center">
+                        6-Digit Security Code
+                      </label>
+                      <div className="flex items-center justify-center gap-2" onPaste={handleOtpPaste}>
+                        {otpDigits.map((digit, idx) => (
+                          <input
+                            key={idx}
+                            ref={el => (otpInputsRef.current[idx] = el)}
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={1}
+                            value={digit}
+                            onChange={e => handleOtpChange(idx, e.target.value)}
+                            onKeyDown={e => handleOtpKeyDown(idx, e)}
+                            className="w-11 h-13 text-center text-xl font-mono font-bold bg-[#181B26] border border-white/15 focus:border-[#F97316] focus:ring-1 focus:ring-[#F97316] text-white rounded-xl outline-none transition-all shadow-inner"
+                          />
+                        ))}
+                      </div>
                     </div>
 
-                    {/* Dev OTP Quick-Fill helper if present in development */}
-                    {devOtpHint && (
-                      <div className="bg-[#090A0F] border border-amber-500/30 rounded-xl p-2.5 flex items-center justify-between text-xs font-mono text-amber-300">
-                        <span>Dev OTP: <strong className="text-white tracking-widest">{devOtpHint}</strong></span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const chars = devOtpHint.split('');
-                            setOtpDigits(chars);
-                            toast.success('Dev OTP auto-filled');
-                          }}
-                          className="text-[11px] underline text-[#F97316] hover:text-[#FB923C]"
-                        >
-                          Auto-fill
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Resend Timer & Action */}
-                    <div className="flex items-center justify-between text-xs font-mono pt-1">
+                    {/* Resend 60-Second Countdown */}
+                    <div className="flex items-center justify-between text-xs font-mono pt-0.5">
                       <span className="text-[#94A3B8]">
                         {countdown > 0 ? `Resend in ${countdown}s` : 'Did not receive code?'}
                       </span>
@@ -486,51 +492,10 @@ export default function AdminLogin() {
                       </button>
                     </div>
 
-                    <button
-                      type="submit"
-                      disabled={loading || fullOtp.length !== 6}
-                      className="w-full flex items-center justify-center gap-2 bg-[#F97316] hover:bg-[#EA6C10] disabled:opacity-50 text-[#090A0F] font-extrabold py-3.5 rounded-xl transition-all shadow-lg shadow-orange-500/25 text-sm cursor-pointer"
-                    >
-                      {loading ? (
-                        <div className="w-5 h-5 border-2 border-[#090A0F] border-t-transparent rounded-full animate-spin" />
-                      ) : (
-                        'Verify Code & Continue'
-                      )}
-                    </button>
-
-                    <div className="text-center">
-                      <button
-                        type="button"
-                        onClick={() => setForgotStep('REQUEST_OTP')}
-                        className="text-xs text-[#94A3B8] hover:text-white transition-colors inline-flex items-center gap-1"
-                      >
-                        <ArrowLeft size={13} /> Change Phone Number
-                      </button>
-                    </div>
-                  </form>
-                )}
-
-                {/* STEP 3: SET NEW PASSWORD */}
-                {forgotStep === 'SET_PASSWORD' && (
-                  <form onSubmit={handleResetPassword} className="space-y-4">
-                    <div className="text-center">
-                      <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mx-auto text-emerald-400 mb-2">
-                        <ShieldCheck size={22} />
-                      </div>
-                      <h3
-                        className="text-base font-bold text-white"
-                        style={{ fontFamily: 'Space Grotesk, sans-serif' }}
-                      >
-                        Set New Admin Password
-                      </h3>
-                      <p className="text-xs text-[#94A3B8]">
-                        OTP verified for <span className="font-mono text-white">admin</span>. Choose a strong new password.
-                      </p>
-                    </div>
-
-                    <div>
+                    {/* New Password Input */}
+                    <div className="pt-2 border-t border-white/10">
                       <label className="text-xs font-mono uppercase tracking-wider text-[#94A3B8] mb-1.5 block">
-                        New Password
+                        Set Password
                       </label>
                       <div className="relative">
                         <input
@@ -550,7 +515,7 @@ export default function AdminLogin() {
                         </button>
                       </div>
 
-                      {/* Password strength visual meter */}
+                      {/* Password strength meter */}
                       {newPassword && (
                         <div className="mt-2 space-y-1">
                           <div className="flex gap-1 h-1.5">
@@ -571,9 +536,10 @@ export default function AdminLogin() {
                       )}
                     </div>
 
+                    {/* Confirm Password Input */}
                     <div>
                       <label className="text-xs font-mono uppercase tracking-wider text-[#94A3B8] mb-1.5 block">
-                        Confirm New Password
+                        Confirm Password
                       </label>
                       <input
                         type={showNewPw ? 'text' : 'password'}
@@ -583,29 +549,29 @@ export default function AdminLogin() {
                         placeholder="Re-enter password"
                         className="w-full bg-[#181B26] border border-white/10 text-white placeholder-slate-500 px-4 py-2.5 rounded-xl focus:outline-none focus:border-[#F97316] text-sm"
                       />
+                      {confirmPassword && newPassword !== confirmPassword && (
+                        <p className="text-xs text-rose-400 flex items-center gap-1 mt-1">
+                          <ShieldAlert size={13} /> Passwords do not match
+                        </p>
+                      )}
                     </div>
 
-                    {confirmPassword && newPassword !== confirmPassword && (
-                      <p className="text-xs text-rose-400 flex items-center gap-1">
-                        <ShieldAlert size={13} /> Passwords do not match
-                      </p>
-                    )}
-
+                    {/* Save Password Button */}
                     <button
                       type="submit"
-                      disabled={loading || newPassword.length < 6 || newPassword !== confirmPassword}
+                      disabled={loading || fullOtp.length !== 6 || newPassword.length < 6 || newPassword !== confirmPassword}
                       className="w-full flex items-center justify-center gap-2 bg-[#F97316] hover:bg-[#EA6C10] disabled:opacity-50 text-[#090A0F] font-extrabold py-3.5 rounded-xl transition-all shadow-lg shadow-orange-500/25 text-sm cursor-pointer mt-2"
                     >
                       {loading ? (
                         <div className="w-5 h-5 border-2 border-[#090A0F] border-t-transparent rounded-full animate-spin" />
                       ) : (
-                        'Save New Password'
+                        'Save & Activate Password'
                       )}
                     </button>
                   </form>
                 )}
 
-                {/* STEP 4: SUCCESS STATE */}
+                {/* STEP 3: SUCCESS STATE */}
                 {forgotStep === 'SUCCESS' && (
                   <div className="space-y-5 text-center py-2">
                     <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mx-auto text-emerald-400">
@@ -617,10 +583,10 @@ export default function AdminLogin() {
                         className="text-lg font-bold text-white mb-1"
                         style={{ fontFamily: 'Space Grotesk, sans-serif' }}
                       >
-                        Password Changed Successfully!
+                        Password Activated Successfully!
                       </h3>
                       <p className="text-xs text-[#94A3B8] leading-relaxed">
-                        Your admin credentials have been updated securely. You can now log into your dashboard using your new password.
+                        Your admin password has been saved securely. You can now use this password for all future sign-ins.
                       </p>
                     </div>
 

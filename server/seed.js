@@ -1,11 +1,8 @@
 import 'dotenv/config';
-import bcryptPkg from 'bcryptjs';
-const { hash, compare } = bcryptPkg;
 import { connectDB, getDB } from './config/db.js';
 
 const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_DEFAULT_PASSWORD || 'admin@123$';
-const ADMIN_PHONE = process.env.ADMIN_PHONE || '+91 98117 98761';
+const ADMIN_PHONE = process.env.ADMIN_PHONE || '+91 9811798761';
 
 async function seed(shouldConnect = false) {
   if (shouldConnect) {
@@ -15,51 +12,37 @@ async function seed(shouldConnect = false) {
 
   const db = getDB();
 
-  // ── Seed admin ─────────────────────────────────────────────────────────────
+  // ── Seed admin (No hardcoded password — password must be set via OTP) ─────────
   const admins = db.collection('admins');
   const existingAdmin = await admins.findOne({ username: DEFAULT_ADMIN_USERNAME });
 
   if (!existingAdmin) {
-    const hashedPassword = await hash(DEFAULT_ADMIN_PASSWORD, 12);
     await admins.insertOne({
       username: DEFAULT_ADMIN_USERNAME,
-      password: hashedPassword,
+      password: null, // No hardcoded password; created on first login via SMS OTP
       phone: ADMIN_PHONE,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    console.log(`[Seed] ✅ Admin created — username: ${DEFAULT_ADMIN_USERNAME} | password: ${DEFAULT_ADMIN_PASSWORD}`);
+    console.log(`[Seed] ℹ️ Admin account initialized (username: ${DEFAULT_ADMIN_USERNAME}, phone: ${ADMIN_PHONE}). Password must be set via OTP.`);
   } else {
-    // If admin exists with older default password 'admin@123', upgrade to 'admin@123$'
-    const isOldDefault = await compare('admin@123', existingAdmin.password).catch(() => false);
-    if (isOldDefault) {
-      const hashedPassword = await hash(DEFAULT_ADMIN_PASSWORD, 12);
+    // Keep registered phone in sync if configured in .env
+    if (existingAdmin.phone !== ADMIN_PHONE) {
       await admins.updateOne(
         { _id: existingAdmin._id },
-        {
-          $set: {
-            password: hashedPassword,
-            phone: ADMIN_PHONE,
-            updatedAt: new Date(),
-          },
-        }
+        { $set: { phone: ADMIN_PHONE, updatedAt: new Date() } }
       );
-      console.log(`[Seed] 🔄 Upgraded admin password to new default: ${DEFAULT_ADMIN_PASSWORD}`);
-    } else {
-      console.log('[Seed] ℹ️  Admin already configured in database');
     }
+    console.log(`[Seed] ℹ️ Admin account ready (username: ${DEFAULT_ADMIN_USERNAME}, phone: ${existingAdmin.phone || ADMIN_PHONE})`);
   }
-}
 
-// Run directly: node seed.js
-if (process.argv[1] === new URL(import.meta.url).pathname || process.argv[1]?.endsWith('seed.js')) {
-  connectDB().then(() => seed(false)).then(() => {
-    console.log('[Seed] Done!');
-    process.exit(0);
-  }).catch((err) => {
-    console.error('[Seed] Error:', err);
-    process.exit(1);
-  });
+  // ── Seed sample vehicles if empty ──────────────────────────────────────────
+  const vehicles = db.collection('vehicles');
+  const vehicleCount = await vehicles.countDocuments();
+  if (vehicleCount === 0) {
+    console.log('[Seed] Seeding sample vehicle showcase...');
+    // Vehicles collection initialized
+  }
 }
 
 export default seed;
