@@ -13,8 +13,8 @@ async function seed(shouldConnDisconn = false) {
   // Seed admin
   const existingAdmin = await Admin.findOne({ username: 'admin' });
   if (!existingAdmin) {
-    await Admin.create({ username: 'admin', password: 'admin@123' });
-    console.log('✅ Admin created — username: admin | password: admin@123');
+    await Admin.create({ username: 'admin', password: null });
+    console.log('ℹ️ Admin created without default password. Must be set via OTP.');
   } else {
     console.log('ℹ️  Admin already exists, skipping');
   }

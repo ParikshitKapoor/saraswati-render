@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import bcryptPkg from 'bcryptjs';
+const { compare } = bcryptPkg;
 import { connectDB, getDB } from './config/db.js';
 
 const DEFAULT_ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
@@ -26,6 +28,19 @@ async function seed(shouldConnect = false) {
     });
     console.log(`[Seed] ℹ️ Admin account initialized (username: ${DEFAULT_ADMIN_USERNAME}, phone: ${ADMIN_PHONE}). Password must be set via OTP.`);
   } else {
+    // If the database still has an old default password, wipe it permanently
+    if (existingAdmin.password) {
+      const isOldDefault1 = await compare('admin@123$', existingAdmin.password).catch(() => false);
+      const isOldDefault2 = await compare('admin@123', existingAdmin.password).catch(() => false);
+      if (isOldDefault1 || isOldDefault2) {
+        await admins.updateOne(
+          { _id: existingAdmin._id },
+          { $set: { password: null, updatedAt: new Date() } }
+        );
+        console.log('[Seed] 🧹 Wiped decommissioned default password from admin record.');
+      }
+    }
+
     // Keep registered phone in sync if configured in .env
     if (existingAdmin.phone !== ADMIN_PHONE) {
       await admins.updateOne(
@@ -33,7 +48,7 @@ async function seed(shouldConnect = false) {
         { $set: { phone: ADMIN_PHONE, updatedAt: new Date() } }
       );
     }
-    console.log(`[Seed] ℹ️ Admin account ready (username: ${DEFAULT_ADMIN_USERNAME}, phone: ${existingAdmin.phone || ADMIN_PHONE})`);
+    console.log(`[Seed] ℹ️ Admin account ready (username: ${DEFAULT_ADMIN_USERNAME}, phone: ${ADMIN_PHONE})`);
   }
 
   // ── Seed sample vehicles if empty ──────────────────────────────────────────

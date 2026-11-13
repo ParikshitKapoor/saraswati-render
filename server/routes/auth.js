@@ -69,15 +69,40 @@ router.post('/login', async (c) => {
       return c.json({ message: 'Invalid credentials' }, 401);
     }
 
-    // First-time login: If no password has been configured yet via OTP
-    if (!admin.password) {
+    // 1. Immediately block & reject decommissioned default passwords
+    if (password === 'admin@123$' || password === 'admin@123') {
+      if (admin && admin.password) {
+        const matchesOld = await compare(password, admin.password).catch(() => false);
+        if (matchesOld) {
+          // Permanently wipe the old default password from the database
+          await admins.updateOne({ _id: admin._id }, { $set: { password: null, updatedAt: new Date() } });
+        }
+      }
       return c.json({
-        message: 'No password has been set yet. Please use "Set / Reset Password via OTP" to configure your initial password.',
+        message: 'The default password (admin@123$) has been completely decommissioned. Please click "Set / Reset Password" to configure your own private password via SMS OTP.',
         needsSetup: true,
       }, 400);
     }
 
-    // Compare with saved password hash
+    // 2. Check if database still holds an old default password hash and wipe it
+    if (admin.password) {
+      const isOldDefault1 = await compare('admin@123$', admin.password).catch(() => false);
+      const isOldDefault2 = await compare('admin@123', admin.password).catch(() => false);
+      if (isOldDefault1 || isOldDefault2) {
+        await admins.updateOne({ _id: admin._id }, { $set: { password: null, updatedAt: new Date() } });
+        admin.password = null;
+      }
+    }
+
+    // 3. First-time login: If no password has been configured yet via OTP
+    if (!admin.password) {
+      return c.json({
+        message: 'No password has been set yet. Please use "Set / Reset Password" to configure your password via SMS OTP.',
+        needsSetup: true,
+      }, 400);
+    }
+
+    // 4. Compare with saved password hash
     const isMatch = await compare(password, admin.password);
 
     if (!isMatch) {
